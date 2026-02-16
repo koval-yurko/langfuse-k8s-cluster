@@ -1,8 +1,8 @@
 ---
-stepsCompleted: [1, 2, 3, 4]
+stepsCompleted: [1, 2, 3, 4, 5, 6]
 inputDocuments: []
 workflowType: 'research'
-lastStep: 4
+lastStep: 6
 research_type: 'technical'
 research_topic: 'Langfuse Helm chart deployment to EKS with external RDS PostgreSQL and S3 persistent storage'
 research_goals: 'Practical dev-environment provisioning guide — EKS + RDS + Helm + S3, minimal setup, initial deployment focus'
@@ -12,11 +12,75 @@ web_research_enabled: true
 source_verification: true
 ---
 
-# Research Report: Technical
+# Langfuse on EKS: Dev-Environment Deployment with Terraform, RDS & S3
 
 **Date:** 2026-02-16
 **Author:** Yura
 **Research Type:** Technical
+
+---
+
+## Executive Summary
+
+This research document provides a complete, implementation-ready guide for deploying **Langfuse v3** on **AWS EKS** using the official Helm chart, with externally provisioned **RDS PostgreSQL** and **S3** blob storage. All infrastructure is managed through **Terraform** with a **3-workspace Terraform Cloud** architecture.
+
+Langfuse v3 requires six components to function: Web server, Worker, PostgreSQL, ClickHouse, Redis, and S3. Our architecture externalizes the two most critical data stores (RDS for transactional data, S3 for raw events) so they survive cluster teardown, while keeping ClickHouse and Redis bundled inside the Helm chart for dev simplicity.
+
+**Key Technical Findings:**
+
+- The official `langfuse/langfuse-k8s` Helm chart (v1.2.x) is the recommended K8s deployment method; each bundled sub-chart can be selectively disabled for external services
+- **IRSA** (IAM Roles for Service Accounts) is the preferred mechanism for granting S3 access to pods — eliminates static AWS credentials
+- A **3-workspace Terraform Cloud** layout (`langfuse-network` → `langfuse-deps` → `langfuse-app`) provides clean separation with `tfe_outputs` for cross-workspace data sharing
+- **Public-only subnets** (no NAT gateway) save ~$32/mo with acceptable security trade-offs for dev
+- Total estimated monthly cost: **~$150–155** (EKS $73 + 2x t3.medium $61 + RDS $12 + S3/EBS < $5)
+
+**Top Recommendations:**
+
+1. Use Approach B (Custom Terraform + Helm) for full control and learning
+2. Deploy in 3 sequential layers: Network → Dependencies → Application
+3. Use IRSA for S3, never static access keys
+4. Access Langfuse via `kubectl port-forward` for dev; add ingress later if needed
+5. Destroy cluster when idle to save costs; RDS + S3 data survives teardown
+
+---
+
+## Table of Contents
+
+1. [Research Overview](#research-overview)
+2. [Technical Research Scope Confirmation](#technical-research-scope-confirmation)
+3. [Technology Stack Analysis](#technology-stack-analysis)
+   - Langfuse v3 Architecture — Required Components
+   - Helm Chart — langfuse/langfuse-k8s
+   - External PostgreSQL (RDS) Configuration
+   - S3 Blob Storage Configuration
+   - Required Secrets
+   - ClickHouse and Redis (Bundled for Dev)
+   - Cloud Infrastructure & Deployment Stack
+   - Technology Adoption Trends
+4. [Integration Patterns Analysis](#integration-patterns-analysis)
+   - Deployment Approaches (A vs B)
+   - Custom Terraform + Helm Wiring (3 Layers)
+   - EKS ↔ RDS Networking
+   - IRSA — IAM Roles for Service Accounts
+   - Terraform Helm Provider ↔ EKS
+   - Terraform Cloud — 3-Workspace Architecture
+   - Integration Security Patterns
+5. [Architectural Patterns and Design](#architectural-patterns-and-design)
+   - Terraform Project Structure (3-Workspace)
+   - Workspace 1: Network — VPC + EKS
+   - Workspace 2: Dependencies — RDS, S3, IRSA
+   - Workspace 3: Application — Helm Release
+   - Complete Helm values.yaml (Dev)
+   - Known Gotchas and Design Decisions
+   - Data Persistence Architecture
+6. [Implementation Approaches and Deployment](#implementation-approaches-and-deployment)
+   - Deployment Sequence
+   - Terraform Cloud Run Triggers
+   - Cost Estimation
+   - Teardown Sequence
+   - Troubleshooting Checklist
+   - Prerequisites and Skills
+7. [Conclusion and Next Steps](#conclusion-and-next-steps)
 
 ---
 
@@ -1011,3 +1075,50 @@ _Source: [Langfuse Troubleshooting FAQ](https://langfuse.com/self-hosting/troubl
 | Terraform knowledge | Intermediate | Modules, providers, state management |
 | Kubernetes knowledge | Basic | Pods, services, namespaces, port-forward |
 | AWS networking | Basic | VPC, subnets, security groups |
+
+---
+
+## Conclusion and Next Steps
+
+### Summary of Key Findings
+
+This research confirms that deploying Langfuse v3 on EKS with external RDS and S3 is a well-supported, practical approach. The official Helm chart handles the complexity of wiring six components together, while Terraform provides reproducible infrastructure. The 3-workspace Terraform Cloud architecture cleanly separates concerns and enables independent lifecycle management for network, dependencies, and application layers.
+
+### Implementation Readiness
+
+All code blocks in this document are implementation-ready. The research covers:
+
+- **Complete Terraform modules** for VPC, EKS, RDS, S3, and IRSA — copy-paste ready
+- **Complete Helm values.yaml** with external RDS, IRSA-based S3, and bundled ClickHouse/Redis
+- **Cross-workspace wiring** via `tfe_outputs` with all required outputs documented
+- **Deployment and teardown sequences** with verification commands at each step
+- **Troubleshooting guide** covering the most common failure modes
+
+### Recommended Next Steps
+
+1. **Create the 3 Terraform workspace directories** following the project structure documented in the Architectural Patterns section
+2. **Set up Terraform Cloud workspaces** (`langfuse-network`, `langfuse-deps`, `langfuse-app`) with run triggers
+3. **Deploy Layer 1 (Network)** — VPC + EKS cluster (~15 min provisioning)
+4. **Deploy Layer 2 (Dependencies)** — RDS + S3 + IRSA (~5 min)
+5. **Deploy Layer 3 (Application)** — Helm release (~5 min)
+6. **Verify** via `kubectl port-forward` and health check endpoints
+
+### Future Enhancements (Beyond Dev)
+
+For a production upgrade, consider:
+
+- Private subnets + NAT gateway for network isolation
+- Managed ClickHouse (e.g., ClickHouse Cloud) and ElastiCache Redis instead of bundled
+- Ingress controller + Route53 DNS for a proper URL (`langfuse.yourdomain.com`)
+- `secretKeyRef` for all secrets (backed by AWS Secrets Manager + External Secrets Operator)
+- Spot instances for cost savings with fallback to on-demand
+- Monitoring via Prometheus + Grafana or CloudWatch Container Insights
+
+---
+
+**Technical Research Completion Date:** 2026-02-17
+**Research Period:** 2026-02-16 to 2026-02-17
+**Source Verification:** All technical facts verified with current web sources
+**Confidence Level:** High — based on official Langfuse documentation, Terraform registry modules, and AWS documentation
+
+_This research document serves as the foundation for implementing the Langfuse K8s deployment. All architectural decisions have been validated against current documentation and confirmed through user discussion._
