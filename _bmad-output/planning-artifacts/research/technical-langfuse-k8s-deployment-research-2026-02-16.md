@@ -1,8 +1,8 @@
 ---
-stepsCompleted: [1, 2, 3]
+stepsCompleted: [1, 2, 3, 4]
 inputDocuments: []
 workflowType: 'research'
-lastStep: 3
+lastStep: 4
 research_type: 'technical'
 research_topic: 'Langfuse Helm chart deployment to EKS with external RDS PostgreSQL and S3 persistent storage'
 research_goals: 'Practical dev-environment provisioning guide — EKS + RDS + Helm + S3, minimal setup, initial deployment focus'
@@ -292,7 +292,7 @@ For a custom setup, the integration pattern uses **3 Terraform layers** connecte
 
 ```
 Layer 1: VPC + EKS Cluster
-    ↓ outputs: vpc_id, private_subnet_ids, cluster_endpoint, cluster_ca, oidc_provider_arn
+    ↓ outputs: vpc_id, public_subnet_ids, cluster_endpoint, cluster_ca, oidc_provider_arn
 Layer 2: RDS PostgreSQL + S3 Bucket + IAM (IRSA)
     ↓ outputs: rds_endpoint, s3_bucket_name, irsa_role_arn
 Layer 3: Helm Release (Langfuse chart)
@@ -462,7 +462,7 @@ data "tfe_outputs" "network" {
   workspace    = "langfuse-network"
 }
 # → data.tfe_outputs.network.values.vpc_id
-# → data.tfe_outputs.network.values.private_subnet_ids
+# → data.tfe_outputs.network.values.public_subnet_ids
 # → data.tfe_outputs.network.values.oidc_provider_arn
 
 # In Workspace 3 (langfuse-app) — reads both upstream workspaces
@@ -496,3 +496,366 @@ _Source: [Terraform Cloud Workspace State](https://developer.hashicorp.com/terra
 | **S3 encryption** | SSE-S3 or SSE-KMS | Optional `LANGFUSE_S3_*_SSE` env vars |
 
 _Source: [Langfuse Configuration](https://langfuse.com/self-hosting/configuration), [langfuse-k8s README](https://github.com/langfuse/langfuse-k8s/blob/main/README.md)_
+
+---
+
+## Architectural Patterns and Design
+
+### Terraform Project Structure (3-Workspace)
+
+```
+langfuse-k8s-cluster/
+├── terraform/
+│   ├── 01-network/              # Workspace: langfuse-network
+│   │   ├── main.tf              # VPC + EKS cluster
+│   │   ├── variables.tf
+│   │   ├── outputs.tf           # vpc_id, subnet_ids, cluster_*, oidc_provider_arn
+│   │   └── providers.tf
+│   ├── 02-deps/                 # Workspace: langfuse-deps
+│   │   ├── main.tf              # RDS, S3 bucket, IRSA role
+│   │   ├── variables.tf
+│   │   ├── outputs.tf           # rds_endpoint, s3_bucket, irsa_role_arn
+│   │   └── providers.tf
+│   └── 03-app/                  # Workspace: langfuse-app
+│       ├── main.tf              # Helm release
+│       ├── values.yaml          # Langfuse Helm values
+│       ├── variables.tf
+│       └── providers.tf
+└── docs/
+```
+
+**Apply order:** `01-network` → `02-deps` → `03-app` (each workspace applied independently via Terraform Cloud)
+
+_Source: [HashiCorp Terraform Workspaces](https://developer.hashicorp.com/terraform/cli/workspaces)_
+
+### Workspace 1: Network — VPC + EKS (Recommended Modules)
+
+| Module | Registry Source | Version | Purpose |
+|--------|----------------|---------|---------|
+| VPC | `terraform-aws-modules/vpc/aws` | ~> 5.0 | VPC, public subnets (no NAT) |
+| EKS | `terraform-aws-modules/eks/aws` | ~> 21.0 | EKS cluster + managed node group |
+
+**Minimal VPC for dev (public subnets only — no NAT gateway, saves ~$32/mo):**
+
+```hcl
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"
+
+  name = "langfuse-dev"
+  cidr = "10.0.0.0/16"
+
+  azs            = ["us-east-1a", "us-east-1b"]
+  public_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
+
+  # No private subnets, no NAT gateway — dev cost optimization
+  enable_nat_gateway = false
+
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  # Required tags for EKS load balancer discovery
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = 1
+  }
+
+  # Auto-assign public IPs to instances in public subnets
+  map_public_ip_on_launch = true
+}
+```
+
+**Minimal EKS for dev (nodes in public subnets):**
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  cluster_name    = "langfuse-dev"
+  cluster_version = "1.31"
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.public_subnets  # nodes in public subnets — direct internet access
+
+  cluster_endpoint_public_access = true  # dev — allows kubectl from local machine
+
+  enable_irsa = true  # creates OIDC provider for IRSA
+
+  eks_managed_node_groups = {
+    default = {
+      instance_types = ["t3.medium"]  # minimum viable for Langfuse + ClickHouse + Redis
+      min_size       = 2
+      max_size       = 3
+      desired_size   = 2
+    }
+  }
+}
+```
+
+**Why public subnets only?** EKS nodes need outbound internet to pull container images (Langfuse, Bitnami ClickHouse/Redis) and reach AWS APIs. Private subnets require a NAT gateway (~$32/mo). For dev, placing nodes in public subnets gives direct internet access at zero extra cost. Trade-off: nodes get public IPs — acceptable for a non-production environment.
+
+**Why `t3.medium` (2 vCPU, 4 GiB)?** Langfuse Web + Worker each request ~0.5 CPU / 1 GiB in dev. ClickHouse and Redis also run in-cluster. Two `t3.medium` nodes give 4 vCPU / 8 GiB total — sufficient for dev workloads. Avoid `t3.small` as ClickHouse alone recommends 2 GiB minimum.
+
+**Key outputs to expose:**
+
+```hcl
+output "vpc_id" { value = module.vpc.vpc_id }
+output "public_subnet_ids" { value = module.vpc.public_subnets }
+output "cluster_name" { value = module.eks.cluster_name }
+output "cluster_endpoint" { value = module.eks.cluster_endpoint }
+output "cluster_ca_data" { value = module.eks.cluster_certificate_authority_data }
+output "oidc_provider_arn" { value = module.eks.oidc_provider_arn }
+output "node_security_group_id" { value = module.eks.node_security_group_id }
+```
+
+_Source: [terraform-aws-modules/vpc/aws](https://registry.terraform.io/modules/terraform-aws-modules/vpc/aws/latest), [terraform-aws-modules/eks/aws](https://registry.terraform.io/modules/terraform-aws-modules/eks/aws/latest)_
+
+### Workspace 2: Dependencies — RDS, S3, IRSA
+
+**RDS PostgreSQL (minimal dev):**
+
+```hcl
+module "rds" {
+  source  = "terraform-aws-modules/rds/aws"
+  version = "~> 6.0"
+
+  identifier = "langfuse-dev"
+
+  engine         = "postgres"
+  engine_version = "16"
+  family         = "postgres16"
+  instance_class = "db.t4g.micro"  # smallest — 2 vCPU, 1 GiB (free tier eligible)
+
+  allocated_storage = 20
+
+  db_name  = "langfuse"
+  username = "langfuse"
+  port     = 5432
+
+  # Dev settings
+  multi_az               = false
+  publicly_accessible    = false
+  skip_final_snapshot    = true
+  deletion_protection    = false
+  backup_retention_period = 0
+
+  # Networking
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  create_db_subnet_group = true
+  subnet_ids             = data.tfe_outputs.network.values.public_subnet_ids
+}
+
+resource "aws_security_group" "rds" {
+  name_prefix = "langfuse-rds-"
+  vpc_id      = data.tfe_outputs.network.values.vpc_id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [data.tfe_outputs.network.values.node_security_group_id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+```
+
+**S3 Bucket:**
+
+```hcl
+resource "aws_s3_bucket" "langfuse" {
+  bucket = "langfuse-dev-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true  # dev — allows terraform destroy to clean up
+}
+
+resource "aws_s3_bucket_versioning" "langfuse" {
+  bucket = aws_s3_bucket.langfuse.id
+  versioning_configuration { status = "Disabled" }  # dev — no versioning needed
+}
+```
+
+**IRSA Role for S3:**
+
+```hcl
+module "langfuse_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
+
+  role_name = "langfuse-s3-access"
+
+  oidc_providers = {
+    main = {
+      provider_arn               = data.tfe_outputs.network.values.oidc_provider_arn
+      namespace_service_accounts = ["langfuse:langfuse"]
+    }
+  }
+
+  inline_policy_statements = [
+    {
+      effect    = "Allow"
+      actions   = ["s3:PutObject", "s3:GetObject", "s3:ListBucket", "s3:DeleteObject"]
+      resources = [
+        aws_s3_bucket.langfuse.arn,
+        "${aws_s3_bucket.langfuse.arn}/*"
+      ]
+    }
+  ]
+}
+```
+
+**Key outputs:**
+
+```hcl
+output "rds_endpoint" { value = module.rds.db_instance_endpoint }
+output "rds_password" { value = module.rds.db_instance_password; sensitive = true }
+output "s3_bucket_name" { value = aws_s3_bucket.langfuse.id }
+output "s3_bucket_region" { value = aws_s3_bucket.langfuse.region }
+output "irsa_role_arn" { value = module.langfuse_irsa.iam_role_arn }
+```
+
+_Source: [terraform-aws-modules/rds/aws](https://registry.terraform.io/modules/terraform-aws-modules/rds/aws/latest), [terraform-aws-modules/iam IRSA](https://registry.terraform.io/modules/terraform-aws-modules/iam/aws/latest/submodules/iam-role-for-service-accounts-eks)_
+
+### Workspace 3: Application — Helm Release
+
+**Providers configuration:**
+
+```hcl
+provider "helm" {
+  kubernetes {
+    host                   = data.tfe_outputs.network.values.cluster_endpoint
+    cluster_ca_certificate = base64decode(data.tfe_outputs.network.values.cluster_ca_data)
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", data.tfe_outputs.network.values.cluster_name]
+    }
+  }
+}
+
+resource "helm_release" "langfuse" {
+  name             = "langfuse"
+  repository       = "https://langfuse.github.io/langfuse-k8s"
+  chart            = "langfuse"
+  namespace        = "langfuse"
+  create_namespace = true
+
+  values = [templatefile("values.yaml", {
+    rds_host       = split(":", data.tfe_outputs.deps.values.rds_endpoint)[0]
+    rds_password   = data.tfe_outputs.deps.values.rds_password
+    s3_bucket      = data.tfe_outputs.deps.values.s3_bucket_name
+    s3_region      = data.tfe_outputs.deps.values.s3_bucket_region
+    irsa_role_arn  = data.tfe_outputs.deps.values.irsa_role_arn
+  })]
+}
+```
+
+_Source: [Terraform Helm Provider](https://registry.terraform.io/providers/hashicorp/Helm/latest/docs), [HashiCorp Helm Tutorial](https://developer.hashicorp.com/terraform/tutorials/kubernetes/helm-provider)_
+
+### Complete Helm values.yaml (Dev)
+
+```yaml
+# === Langfuse Core Secrets ===
+langfuse:
+  salt:
+    value: "${random_salt}"           # generate via: openssl rand -base64 32
+  nextauth:
+    secret:
+      value: "${random_nextauth}"     # generate via: openssl rand -base64 32
+    url:
+      value: "http://localhost:3000"  # dev — port-forward access
+  encryptionKey:
+    value: "${random_encryption}"     # generate via: openssl rand -hex 32
+
+  # Service Account with IRSA annotation for S3 access
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: "${irsa_role_arn}"
+
+# === External PostgreSQL (RDS) ===
+postgresql:
+  deploy: false
+  auth:
+    username: "langfuse"
+    password: "${rds_password}"
+    database: "langfuse"
+    host: "${rds_host}"
+  directUrl: "postgres://langfuse:${rds_password}@${rds_host}:5432/langfuse"
+  shadowDatabaseUrl: ""
+
+# === External S3 (AWS) ===
+s3:
+  deploy: false
+  bucket: "${s3_bucket}"
+  region: "${s3_region}"
+  forcePathStyle: false
+  # No accessKeyId/secretAccessKey — IRSA provides credentials via service account
+  eventUpload:
+    prefix: "events/"
+  mediaUpload:
+    prefix: "media/"
+  batchExport:
+    prefix: "exports/"
+
+# === Bundled ClickHouse (in-cluster for dev) ===
+clickhouse:
+  deploy: true
+  auth:
+    password: "dev-clickhouse-pw"
+
+# === Bundled Redis (in-cluster for dev) ===
+redis:
+  deploy: true
+  auth:
+    password: "dev-redis-pw"
+```
+
+_Source: [langfuse-k8s README](https://github.com/langfuse/langfuse-k8s/blob/main/README.md), [DeepWiki Helm Chart Structure](https://deepwiki.com/langfuse/langfuse-k8s/6.1-helm-chart-structure)_
+
+### Known Gotchas and Design Decisions
+
+| Issue | Detail | Mitigation |
+|-------|--------|------------|
+| **Helm release name must be `langfuse`** | Chart's Redis hostname resolution assumes this name | Always use `name = "langfuse"` in helm_release |
+| **Prisma migration P3009** | Can occur with external RDS if schema is not clean on first deploy | Ensure fresh database; set `directUrl` for migration user with longer timeouts |
+| **shadowDatabaseUrl** | Required if DB user lacks CREATE DATABASE privileges | Set to empty string or provide a separate shadow DB connection |
+| **RDS endpoint format** | `terraform-aws-modules/rds` outputs `host:port` format | Strip port: `split(":", rds_endpoint)[0]` for Helm host field |
+| **Bitnami image registry** | As of Aug 2025, chart uses `bitnamilegacy/*` images | No action needed — chart handles this automatically |
+| **ClickHouse PVC data loss** | EBS PVC destroyed with cluster deletion; raw events safe in S3 | Acceptable for dev — no historical trace data survives cluster teardown |
+| **Public subnets (dev)** | Nodes get public IPs — not suitable for production | Acceptable for dev; switch to private subnets + NAT for production |
+
+_Source: [Langfuse Issue #8463](https://github.com/langfuse/langfuse/issues/8463), [langfuse-k8s README](https://github.com/langfuse/langfuse-k8s/blob/main/README.md)_
+
+### Data Persistence Architecture
+
+```
+                    ┌──────────────────────────────────────────┐
+                    │          SURVIVES CLUSTER DESTROY        │
+                    │                                          │
+                    │  ┌──────────────┐  ┌──────────────────┐  │
+                    │  │  AWS RDS     │  │  AWS S3 Bucket   │  │
+                    │  │  PostgreSQL  │  │  (raw events,    │  │
+                    │  │  (users,     │  │   media, exports)│  │
+                    │  │   projects,  │  │                  │  │
+                    │  │   API keys)  │  │                  │  │
+                    │  └──────────────┘  └──────────────────┘  │
+                    └──────────────────────────────────────────┘
+
+                    ┌──────────────────────────────────────────┐
+                    │          EPHEMERAL (IN-CLUSTER)          │
+                    │                                          │
+                    │  ┌─────────────┐  ┌───────────────────┐  │
+                    │  │ ClickHouse  │  │  Redis            │  │
+                    │  │ (processed  │  │  (queue + cache,  │  │
+                    │  │  traces,    │  │   fully ephemeral)│  │
+                    │  │  EBS PVC)   │  │                   │  │
+                    │  └─────────────┘  └───────────────────┘  │
+                    └──────────────────────────────────────────┘
+```
+
+_Based on: [Langfuse v3 Architecture](https://langfuse.com/self-hosting), user-confirmed dev requirements_
