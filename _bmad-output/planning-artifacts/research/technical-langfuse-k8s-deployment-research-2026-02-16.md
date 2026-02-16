@@ -1,8 +1,8 @@
 ---
-stepsCompleted: [1, 2]
+stepsCompleted: [1, 2, 3]
 inputDocuments: []
 workflowType: 'research'
-lastStep: 2
+lastStep: 3
 research_type: 'technical'
 research_topic: 'Langfuse Helm chart deployment to EKS with external RDS PostgreSQL and S3 persistent storage'
 research_goals: 'Practical dev-environment provisioning guide — EKS + RDS + Helm + S3, minimal setup, initial deployment focus'
@@ -241,3 +241,258 @@ _Source: [Langfuse ClickHouse Docs](https://langfuse.com/self-hosting/deployment
 - **Bitnami registry restructure (Aug 2025)** — chart updated to use `bitnamilegacy/*` images to prevent pull failures
 
 _Source: [Langfuse v3 Release Notes](https://langfuse.com/changelog/2024-12-09-Langfuse-v3-stable-release), [langfuse-k8s Releases](https://github.com/langfuse/langfuse-k8s/releases)_
+
+---
+
+## Integration Patterns Analysis
+
+### Deployment Approach: Two Options
+
+There are two viable approaches to deploying Langfuse on AWS EKS with Terraform:
+
+| Approach | Description | Best For |
+|----------|-------------|----------|
+| **A) Official Terraform Module** | `langfuse/langfuse-terraform-aws` — provisions everything (VPC, EKS Fargate, Aurora, ElastiCache, S3, Helm release) as a single module | Quick start, opinionated, all-in-one |
+| **B) Custom Terraform + Helm** | Separate Terraform modules for EKS, RDS, S3 + Helm provider for Langfuse chart | Full control, existing infra reuse, learning |
+
+**For your dev setup with learning goals, Approach B is recommended** — it gives you control over each component and maps directly to your stated IaC requirements (cluster creation, DB creation, Helm chart). However, the official module (Approach A) is documented below as a reference.
+
+_Source: [Langfuse AWS Terraform Deployment](https://langfuse.com/self-hosting/deployment/aws), [langfuse/langfuse-terraform-aws](https://github.com/langfuse/langfuse-terraform-aws)_
+
+### Official Langfuse Terraform AWS Module (Reference)
+
+The official module (`github.com/langfuse/langfuse-terraform-aws`) provisions a production-grade stack:
+
+- EKS with **Fargate** (no EC2 node management)
+- **Aurora PostgreSQL Serverless v2** (not plain RDS)
+- **ElastiCache Redis** (managed, not bundled)
+- S3 bucket with IRSA-based access
+- Route53 + ACM for DNS/TLS
+- AWS Load Balancer Controller for ingress
+- ClickHouse on EFS persistent storage
+
+```hcl
+# Reference — official module usage
+module "langfuse" {
+  source = "github.com/langfuse/langfuse-terraform-aws?ref=0.6.2"
+  domain = "langfuse.example.com"
+  postgres_min_capacity = 0.5
+  postgres_max_capacity = 2.0
+  langfuse_helm_chart_version = "1.5.14"
+}
+```
+
+**Known limitation:** Initial deployment has a Fargate race condition — CoreDNS and ClickHouse pods need manual restart after first `terraform apply`.
+
+_Source: [langfuse/langfuse-terraform-aws README](https://github.com/langfuse/langfuse-terraform-aws)_
+
+### Custom Approach — Terraform Module Wiring (Approach B)
+
+For a custom setup, the integration pattern uses **3 Terraform layers** connected via remote state or outputs:
+
+```
+Layer 1: VPC + EKS Cluster
+    ↓ outputs: vpc_id, private_subnet_ids, cluster_endpoint, cluster_ca, oidc_provider_arn
+Layer 2: RDS PostgreSQL + S3 Bucket + IAM (IRSA)
+    ↓ outputs: rds_endpoint, s3_bucket_name, irsa_role_arn
+Layer 3: Helm Release (Langfuse chart)
+    ↓ consumes all outputs from Layer 1 & 2
+```
+
+These can be in a single Terraform workspace or split across Terraform Cloud workspaces using `terraform_remote_state` data sources.
+
+_Source: [HashiCorp Helm Provider Tutorial](https://developer.hashicorp.com/terraform/tutorials/kubernetes/helm-provider), [Terraform Remote State](https://developer.hashicorp.com/terraform/language/state/remote-state-data)_
+
+### EKS ↔ RDS Networking Integration
+
+RDS must be reachable from EKS pods. The integration pattern:
+
+1. **Place RDS in the same VPC** as EKS, in private subnets
+2. **Create a DB subnet group** from the private subnets
+3. **Security group rule:** Allow ingress on port `5432` from the EKS node/pod security group
+
+```hcl
+# Security group for RDS allowing EKS access
+resource "aws_security_group" "rds" {
+  name_prefix = "langfuse-rds-"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [module.eks.node_security_group_id]
+  }
+}
+```
+
+**Key fact:** EKS pods in managed node groups share the node security group. For Fargate, pods get their own ENI in the private subnet — the security group must reference the Fargate pod execution role's security group or the VPC CIDR.
+
+_Source: [DZone — EKS and RDS PostgreSQL with Terraform](https://dzone.com/articles/amazon-aws-eks-and-rds-postgresql-with-terraform-i), [Terraform AWS RDS Module](https://registry.terraform.io/modules/terraform-aws-modules/rds/aws)_
+
+### IRSA — IAM Roles for Service Accounts (S3 Access)
+
+IRSA eliminates static AWS credentials in pods. The integration chain:
+
+```
+EKS OIDC Provider → IAM Role (trust policy) → K8s ServiceAccount (annotation) → Pod (auto-injected credentials)
+```
+
+**Terraform setup:**
+
+```hcl
+# 1. EKS module creates OIDC provider automatically
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  # ...
+  enable_irsa = true  # creates OIDC provider
+}
+
+# 2. IAM role for Langfuse S3 access
+module "langfuse_s3_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name = "langfuse-s3-access"
+  oidc_providers = {
+    main = {
+      provider_arn = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["langfuse:langfuse"]
+    }
+  }
+  role_policy_arns = {
+    s3 = aws_iam_policy.langfuse_s3.arn
+  }
+}
+
+# 3. S3 access policy
+resource "aws_iam_policy" "langfuse_s3" {
+  name = "langfuse-s3-access"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:PutObject", "s3:GetObject", "s3:ListBucket"]
+      Resource = [
+        "arn:aws:s3:::langfuse-dev-bucket",
+        "arn:aws:s3:::langfuse-dev-bucket/*"
+      ]
+    }]
+  })
+}
+```
+
+**Helm values for IRSA (no access keys):**
+
+```yaml
+s3:
+  deploy: false
+  bucket: "langfuse-dev-bucket"
+  region: "us-east-1"
+  forcePathStyle: false
+  # No accessKeyId or secretAccessKey — IRSA handles credentials
+  eventUpload:
+    prefix: "events/"
+  mediaUpload:
+    prefix: "media/"
+  batchExport:
+    prefix: "exports/"
+```
+
+The Langfuse service account must be annotated with:
+```yaml
+eks.amazonaws.com/role-arn: "arn:aws:iam::123456789:role/langfuse-s3-access"
+```
+
+Both `langfuse-web` and `langfuse-worker` pods must use this service account.
+
+_Source: [Langfuse S3 Discussion #10076](https://github.com/orgs/langfuse/discussions/10076), [terraform-aws-modules/iam IRSA submodule](https://registry.terraform.io/modules/terraform-aws-modules/iam/aws/latest/submodules/iam-role-for-service-accounts-eks), [AWS IRSA Docs](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html)_
+
+### Terraform Helm Provider ↔ EKS Integration
+
+The Helm provider authenticates to EKS using the cluster endpoint and a short-lived token:
+
+```hcl
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    }
+  }
+}
+
+resource "helm_release" "langfuse" {
+  name       = "langfuse"  # must be "langfuse" per chart assumption
+  repository = "https://langfuse.github.io/langfuse-k8s"
+  chart      = "langfuse"
+  namespace  = "langfuse"
+  create_namespace = true
+
+  values = [file("values.yaml")]
+
+  # Or use set blocks for dynamic values from Terraform outputs
+  set {
+    name  = "postgresql.auth.host"
+    value = module.rds.db_instance_endpoint
+  }
+}
+```
+
+_Source: [HashiCorp Helm Provider Tutorial](https://developer.hashicorp.com/terraform/tutorials/kubernetes/helm-provider), [Terraform Helm Provider Registry](https://registry.terraform.io/providers/hashicorp/Helm/latest/docs)_
+
+### Terraform Cloud — 3-Workspace Architecture
+
+The deployment uses **3 separate Terraform Cloud workspaces** with `tfe_outputs` for cross-workspace data sharing:
+
+```
+Workspace 1: langfuse-network    → VPC + EKS cluster
+Workspace 2: langfuse-deps       → RDS PostgreSQL, S3 bucket, IRSA roles
+Workspace 3: langfuse-app        → Helm release (Langfuse chart)
+```
+
+**Cross-workspace data flow using `tfe_outputs`:**
+
+```hcl
+# In Workspace 2 (langfuse-deps) — reads network outputs
+data "tfe_outputs" "network" {
+  organization = "my-org"
+  workspace    = "langfuse-network"
+}
+# → data.tfe_outputs.network.values.vpc_id
+# → data.tfe_outputs.network.values.private_subnet_ids
+# → data.tfe_outputs.network.values.oidc_provider_arn
+
+# In Workspace 3 (langfuse-app) — reads both upstream workspaces
+data "tfe_outputs" "network" {
+  organization = "my-org"
+  workspace    = "langfuse-network"
+}
+data "tfe_outputs" "deps" {
+  organization = "my-org"
+  workspace    = "langfuse-deps"
+}
+# → data.tfe_outputs.network.values.cluster_endpoint
+# → data.tfe_outputs.deps.values.rds_endpoint
+# → data.tfe_outputs.deps.values.s3_bucket_name
+# → data.tfe_outputs.deps.values.irsa_role_arn
+```
+
+**Why `tfe_outputs` over `terraform_remote_state`:** `tfe_outputs` only exposes declared outputs, not the full state — more secure and doesn't require full state access permissions.
+
+_Source: [Terraform Cloud Workspace State](https://developer.hashicorp.com/terraform/cloud-docs/workspaces/state), [tfe_outputs Data Source](https://developer.hashicorp.com/terraform/language/state/remote-state-data)_
+
+### Integration Security Patterns
+
+| Concern | Pattern | Implementation |
+|---------|---------|---------------|
+| **S3 credentials** | IRSA (no static keys) | IAM role → K8s service account annotation |
+| **RDS credentials** | Helm secret refs | `postgresql.auth.existingSecret` in values.yaml |
+| **Langfuse secrets** | K8s Secrets | `SALT`, `NEXTAUTH_SECRET`, `ENCRYPTION_KEY` via `secretKeyRef` |
+| **EKS auth** | Short-lived tokens | `aws eks get-token` via exec plugin |
+| **RDS network** | Security groups | Allow port 5432 from EKS node SG only |
+| **S3 encryption** | SSE-S3 or SSE-KMS | Optional `LANGFUSE_S3_*_SSE` env vars |
+
+_Source: [Langfuse Configuration](https://langfuse.com/self-hosting/configuration), [langfuse-k8s README](https://github.com/langfuse/langfuse-k8s/blob/main/README.md)_
