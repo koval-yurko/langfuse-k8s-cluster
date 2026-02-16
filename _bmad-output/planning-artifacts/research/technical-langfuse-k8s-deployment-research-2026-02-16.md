@@ -859,3 +859,155 @@ _Source: [Langfuse Issue #8463](https://github.com/langfuse/langfuse/issues/8463
 ```
 
 _Based on: [Langfuse v3 Architecture](https://langfuse.com/self-hosting), user-confirmed dev requirements_
+
+---
+
+## Implementation Approaches and Deployment
+
+### Deployment Sequence
+
+Execute the 3 workspaces in order. Each step must complete before the next begins.
+
+**Step 1 — Network (Workspace: langfuse-network)**
+```bash
+cd terraform/01-network
+terraform init
+terraform apply
+# Wait ~15 min for EKS cluster provisioning
+# Verify: aws eks describe-cluster --name langfuse-dev --query 'cluster.status'
+# Expected: "ACTIVE"
+```
+
+**Step 2 — Dependencies (Workspace: langfuse-deps)**
+```bash
+cd terraform/02-deps
+terraform init
+terraform apply
+# Wait ~5 min for RDS provisioning
+# Verify RDS: aws rds describe-db-instances --db-instance-identifier langfuse-dev --query 'DBInstances[0].DBInstanceStatus'
+# Expected: "available"
+# Verify S3: aws s3 ls | grep langfuse
+```
+
+**Step 3 — Application (Workspace: langfuse-app)**
+```bash
+cd terraform/03-app
+terraform init
+terraform apply
+# Wait ~5 min for Helm release + pod startup
+```
+
+**Post-deploy verification:**
+```bash
+# Configure kubectl
+aws eks update-kubeconfig --name langfuse-dev
+
+# Check all pods are running
+kubectl get pods -n langfuse
+
+# Expected pods: langfuse-web-*, langfuse-worker-*, langfuse-clickhouse-*, langfuse-redis-*
+
+# Health check
+kubectl port-forward svc/langfuse-web -n langfuse 3000:3000
+curl http://localhost:3000/api/public/health
+# Expected: 200 OK
+
+# Health check with DB verification
+curl "http://localhost:3000/api/public/health?failIfDatabaseUnavailable=true"
+# Expected: 200 OK (confirms RDS connection works)
+
+# Readiness check
+curl http://localhost:3000/api/public/ready
+# Expected: 200 OK
+```
+
+_Source: [Langfuse Health Endpoints](https://langfuse.com/self-hosting/configuration/health-readiness-endpoints), [Langfuse Helm Docs](https://langfuse.com/self-hosting/deployment/kubernetes-helm)_
+
+### Terraform Cloud Run Triggers (Automation)
+
+For automated cascading applies, configure **run triggers** between workspaces:
+
+```
+langfuse-network (apply) → triggers → langfuse-deps (plan/apply)
+langfuse-deps (apply)    → triggers → langfuse-app (plan/apply)
+```
+
+This means a single push to `01-network/` can cascade through all three workspaces automatically. Configure via TFC UI or Terraform:
+
+```hcl
+resource "tfe_run_trigger" "deps_from_network" {
+  workspace_id  = tfe_workspace.langfuse_deps.id
+  sourceable_id = tfe_workspace.langfuse_network.id
+}
+
+resource "tfe_run_trigger" "app_from_deps" {
+  workspace_id  = tfe_workspace.langfuse_app.id
+  sourceable_id = tfe_workspace.langfuse_deps.id
+}
+```
+
+_Source: [Terraform Cloud Run Triggers](https://developer.hashicorp.com/terraform/cloud-docs/workspaces/settings/run-triggers)_
+
+### Cost Estimation (Dev Environment)
+
+| Resource | Monthly Cost (us-east-1) | Notes |
+|----------|-------------------------|-------|
+| **EKS control plane** | $73 | Fixed — no free tier |
+| **2x t3.medium nodes** | ~$61 | $0.0416/hr x 2 x 730hr |
+| **RDS db.t4g.micro** | ~$12 | Free tier eligible for 12 months |
+| **S3 bucket** | < $1 | Minimal dev usage |
+| **EBS volumes** (ClickHouse PVC) | ~$2 | 20GB gp3 |
+| **Data transfer** | ~$2-5 | Minimal for dev |
+| | | |
+| **Total estimate** | **~$150-155/mo** | Without NAT gateway |
+
+**Cost-saving tips:**
+- Destroy the cluster when not in use (`terraform destroy` on all 3 workspaces in reverse order)
+- Use Spot instances for node group (`capacity_type = "SPOT"` in EKS module) — saves ~60% on compute but nodes can be reclaimed
+- RDS free tier covers db.t4g.micro for 12 months on new accounts
+
+_Source: [AWS EC2 t3.medium pricing](https://aws.amazon.com/ec2/pricing/on-demand/), [AWS EKS pricing](https://aws.amazon.com/eks/pricing/)_
+
+### Teardown Sequence
+
+Destroy in **reverse order** to avoid dependency errors:
+
+```bash
+# 1. Remove Helm release first
+cd terraform/03-app && terraform destroy
+
+# 2. Remove dependencies (RDS, S3, IRSA)
+cd terraform/02-deps && terraform destroy
+
+# 3. Remove network (VPC, EKS)
+cd terraform/01-network && terraform destroy
+```
+
+**Important:** S3 bucket has `force_destroy = true` so `terraform destroy` will delete all objects. RDS has `skip_final_snapshot = true` and `deletion_protection = false` so it will be deleted cleanly.
+
+### Troubleshooting Checklist
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| Pods stuck in `ImagePullBackOff` | Nodes can't reach container registry | Verify public subnet has internet gateway route; check `map_public_ip_on_launch = true` |
+| `langfuse-web` CrashLoopBackOff | RDS connection failed or Prisma migration error | Check RDS security group allows EKS node SG; verify `DATABASE_URL` via `kubectl logs` |
+| S3 "Could not load credentials" | IRSA not working | Verify service account annotation matches IRSA role ARN; check OIDC provider is configured |
+| Helm release timeout | Pods not becoming Ready | Check node resources — `kubectl describe node`; may need larger instances |
+| Health check returns 503 | Database unreachable | Verify RDS endpoint is correct (strip port); check security group ingress rule |
+| ClickHouse pods pending | No storage class or insufficient node resources | Check `kubectl describe pod`; verify EBS CSI driver is installed on EKS |
+
+_Source: [Langfuse Troubleshooting FAQ](https://langfuse.com/self-hosting/troubleshooting-and-faq), [Langfuse S3 Discussion #10076](https://github.com/orgs/langfuse/discussions/10076)_
+
+### Prerequisites and Skills
+
+| Requirement | Level | Notes |
+|-------------|-------|-------|
+| AWS account | Required | With permissions for EKS, RDS, S3, IAM, VPC |
+| Terraform Cloud account | Required | Free tier supports up to 500 resources |
+| Terraform CLI | >= 1.0 | For local init/plan/apply |
+| AWS CLI | v2 | For `eks get-token` and verification |
+| kubectl | >= 1.27 | For cluster interaction |
+| Helm | >= 3.0 | Only needed for manual chart debugging |
+| Terraform knowledge | Intermediate | Modules, providers, state management |
+| Kubernetes knowledge | Basic | Pods, services, namespaces, port-forward |
+| AWS networking | Basic | VPC, subnets, security groups |
