@@ -1,0 +1,79 @@
+# generated: 2026-02-17
+# project: langfuse-k8s-cluster
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog -> in-progress: Automatically when first story is created (via create-story)
+#   - in-progress -> done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-02-17
+project: langfuse-k8s-cluster
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  # Epic 1: Cloud Network & Compute Platform
+  epic-1: backlog
+  1-1-terraform-workspace-scaffold-and-vpc-provisioning: backlog
+  1-2-eks-cluster-addons-and-workspace-outputs: backlog
+  epic-1-retrospective: optional
+
+  # Epic 2: Persistent Data & Storage Services
+  epic-2: backlog
+  2-1-workspace-scaffold-and-rds-postgresql-provisioning: backlog
+  2-2-s3-bucket-for-langfuse-storage: backlog
+  2-3-irsa-role-for-s3-access-and-workspace-outputs: backlog
+  epic-2-retrospective: optional
+
+  # Epic 3: Langfuse Application Deployment
+  epic-3: backlog
+  3-1-workspace-scaffold-cross-workspace-data-and-secret-generation: backlog
+  3-2-helm-values-template: backlog
+  3-3-helm-release-deployment: backlog
+  epic-3-retrospective: optional
+
+  # Epic 4: Operational Access & Verification
+  epic-4: backlog
+  4-1-service-access-via-port-forward: backlog
+  4-2-health-endpoint-verification: backlog
+  epic-4-retrospective: optional
+
+  # Epic 5: Infrastructure Lifecycle Management
+  epic-5: backlog
+  5-1-independent-workspace-destroy-and-teardown-sequence: backlog
+  5-2-idempotent-apply-and-full-stack-rebuild: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: Configuration & Documentation
+  epic-6: backlog
+  6-1-environment-configuration-files: backlog
+  6-2-comprehensive-readme-documentation: backlog
+  epic-6-retrospective: optional
