@@ -85,20 +85,26 @@ Infrastructure-as-Code (Terraform HCL + Helm YAML) — no traditional applicatio
 langfuse-k8s-cluster/
 ├── terraform/
 │   ├── 01-network/           # Workspace: langfuse-network
-│   │   ├── main.tf
+│   │   ├── providers.tf
+│   │   ├── vpc.tf
+│   │   ├── eks.tf
 │   │   ├── variables.tf
-│   │   ├── outputs.tf
-│   │   └── providers.tf
+│   │   └── outputs.tf
 │   ├── 02-deps/              # Workspace: langfuse-deps
-│   │   ├── main.tf
+│   │   ├── providers.tf
+│   │   ├── data.tf
+│   │   ├── rds.tf
+│   │   ├── s3.tf
+│   │   ├── irsa.tf
 │   │   ├── variables.tf
-│   │   ├── outputs.tf
-│   │   └── providers.tf
+│   │   └── outputs.tf
 │   └── 03-app/               # Workspace: langfuse-app
-│       ├── main.tf
+│       ├── providers.tf
+│       ├── data.tf
+│       ├── secrets.tf
+│       ├── helm.tf
 │       ├── values.yaml.tpl
-│       ├── variables.tf
-│       └── providers.tf
+│       └── variables.tf
 ├── .env.example
 ├── .gitignore
 └── README.md

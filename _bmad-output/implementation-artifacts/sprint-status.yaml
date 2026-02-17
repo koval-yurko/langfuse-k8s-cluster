@@ -41,8 +41,8 @@ story_location: _bmad-output/implementation-artifacts
 
 development_status:
   # Epic 1: Cloud Network & Compute Platform
-  epic-1: backlog
-  1-1-terraform-workspace-scaffold-and-vpc-provisioning: backlog
+  epic-1: in-progress
+  1-1-terraform-workspace-scaffold-and-vpc-provisioning: done
   1-2-eks-cluster-addons-and-workspace-outputs: backlog
   epic-1-retrospective: optional
 
