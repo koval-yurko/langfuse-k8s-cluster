@@ -809,11 +809,16 @@ resource "helm_release" "langfuse" {
   create_namespace = true
 
   values = [templatefile("values.yaml", {
-    rds_host       = split(":", data.tfe_outputs.deps.values.rds_endpoint)[0]
-    rds_password   = data.tfe_outputs.deps.values.rds_password
-    s3_bucket      = data.tfe_outputs.deps.values.s3_bucket_name
-    s3_region      = data.tfe_outputs.deps.values.s3_bucket_region
-    irsa_role_arn  = data.tfe_outputs.deps.values.irsa_role_arn
+    rds_host                 = split(":", data.tfe_outputs.deps.values.rds_endpoint)[0]
+    rds_password             = data.tfe_outputs.deps.values.rds_password
+    s3_bucket                = data.tfe_outputs.deps.values.s3_bucket_name
+    s3_region                = data.tfe_outputs.deps.values.s3_bucket_region
+    irsa_role_arn            = data.tfe_outputs.deps.values.irsa_role_arn
+    init_user_email          = var.langfuse_admin_email
+    init_user_name           = var.langfuse_admin_name
+    init_user_password       = var.langfuse_admin_password
+    init_project_public_key  = var.langfuse_project_public_key
+    init_project_secret_key  = var.langfuse_project_secret_key
   })]
 }
 ```
@@ -840,6 +845,27 @@ langfuse:
     create: true
     annotations:
       eks.amazonaws.com/role-arn: "${irsa_role_arn}"
+
+  # === Headless Initialization + Disable Public Signup ===
+  extraEnv:
+    - name: AUTH_DISABLE_SIGNUP
+      value: "true"
+    - name: LANGFUSE_INIT_ORG_ID
+      value: "langfuse-dev-org"
+    - name: LANGFUSE_INIT_ORG_NAME
+      value: "Dev Org"
+    - name: LANGFUSE_INIT_USER_EMAIL
+      value: "${init_user_email}"
+    - name: LANGFUSE_INIT_USER_NAME
+      value: "${init_user_name}"
+    - name: LANGFUSE_INIT_USER_PASSWORD
+      value: "${init_user_password}"
+    - name: LANGFUSE_INIT_PROJECT_NAME
+      value: "langfuse-dev"
+    - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+      value: "${init_project_public_key}"
+    - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+      value: "${init_project_secret_key}"
 
 # === External PostgreSQL (RDS) ===
 postgresql:
@@ -892,6 +918,8 @@ _Source: [langfuse-k8s README](https://github.com/langfuse/langfuse-k8s/blob/mai
 | **Bitnami image registry** | As of Aug 2025, chart uses `bitnamilegacy/*` images | No action needed — chart handles this automatically |
 | **ClickHouse PVC data loss** | EBS PVC destroyed with cluster deletion; raw events safe in S3 | Acceptable for dev — no historical trace data survives cluster teardown |
 | **Public subnets (dev)** | Nodes get public IPs — not suitable for production | Acceptable for dev; switch to private subnets + NAT for production |
+| **Headless init is idempotent** | `LANGFUSE_INIT_*` vars only create resources if they don't exist yet | Safe to keep across redeploys; won't duplicate user/org/project |
+| **AUTH_DISABLE_SIGNUP** | Blocks all new registrations including invited users | For dev this is fine; for team use, create users via SCIM API or re-enable temporarily |
 
 _Source: [Langfuse Issue #8463](https://github.com/langfuse/langfuse/issues/8463), [langfuse-k8s README](https://github.com/langfuse/langfuse-k8s/blob/main/README.md)_
 
