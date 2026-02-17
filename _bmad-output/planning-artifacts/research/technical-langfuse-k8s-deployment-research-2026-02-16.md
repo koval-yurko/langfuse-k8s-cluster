@@ -139,7 +139,7 @@ The official community-maintained Helm chart is the recommended Kubernetes deplo
 
 **Repository:** `https://langfuse.github.io/langfuse-k8s`
 **GitHub:** [langfuse/langfuse-k8s](https://github.com/langfuse/langfuse-k8s)
-**Current version:** 1.2.x (as of late 2025)
+**Current version:** 1.x (check [releases](https://github.com/langfuse/langfuse-k8s/releases) for latest; the official Terraform module references 1.5.14+)
 **Chart name:** `langfuse/langfuse`
 
 **Installation:**
@@ -170,7 +170,7 @@ postgresql:
     username: langfuse
     password: "<rds-password>"
     database: langfuse
-    host: my-rds-instance.abc123.us-east-1.rds.amazonaws.com
+  host: my-rds-instance.abc123.us-east-1.rds.amazonaws.com
   directUrl: "postgres://langfuse:<password>@<rds-host>:5432/langfuse"
   shadowDatabaseUrl: "postgres://langfuse:<password>@<rds-host>:5432/langfuse"
 ```
@@ -202,12 +202,12 @@ s3:
   deploy: false
   bucket: "langfuse-dev-bucket"
   region: "us-east-1"
-  endpoint: "https://s3.us-east-1.amazonaws.com"
+  # endpoint not needed for native AWS S3 — SDK auto-resolves from region
   forcePathStyle: false
   accessKeyId:
-    value: "<access-key>"      # or use secretKeyRef
+    value: "<access-key>"      # or use secretKeyRef; omit if using IRSA
   secretAccessKey:
-    value: "<secret-key>"      # or use secretKeyRef
+    value: "<secret-key>"      # or use secretKeyRef; omit if using IRSA
   eventUpload:
     prefix: "events/"
   mediaUpload:
@@ -224,7 +224,7 @@ s3:
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["s3:PutObject", "s3:GetObject", "s3:ListBucket"],
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:ListBucket", "s3:DeleteObject"],
       "Resource": [
         "arn:aws:s3:::langfuse-dev-bucket/*",
         "arn:aws:s3:::langfuse-dev-bucket"
@@ -238,16 +238,17 @@ s3:
 
 _Source: [Langfuse S3/Blob Storage Docs](https://langfuse.com/self-hosting/deployment/infrastructure/blobstorage), [AWS IRSA Docs](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html)_
 
-### Required Secrets
+### Required Secrets and Configuration
 
-Four secrets must be configured for any Langfuse deployment:
+Three secrets and one URL must be configured for any Langfuse deployment:
 
-| Secret | Purpose | Generation |
-|--------|---------|------------|
-| `SALT` | Hashing API keys | Any secure random string |
-| `NEXTAUTH_SECRET` | Session cookie validation | Any secure random string |
+| Variable | Purpose | Generation |
+|----------|---------|------------|
+| `SALT` | Hashing API keys | `openssl rand -base64 32` |
+| `NEXTAUTH_SECRET` | Session cookie validation | `openssl rand -base64 32` |
 | `ENCRYPTION_KEY` | Encrypting sensitive data | 256-bit hex: `openssl rand -hex 32` |
-| `NEXTAUTH_URL` | Langfuse web URL (for OAuth) | e.g. `http://localhost:3000` for dev |
+
+Additionally, `NEXTAUTH_URL` must be set to the Langfuse web URL (used for OAuth callbacks and Slack integration links), e.g. `http://localhost:3000` for dev.
 
 ```yaml
 langfuse:
@@ -371,8 +372,8 @@ _Source: [HashiCorp Helm Provider Tutorial](https://developer.hashicorp.com/terr
 
 RDS must be reachable from EKS pods. The integration pattern:
 
-1. **Place RDS in the same VPC** as EKS, in private subnets
-2. **Create a DB subnet group** from the private subnets
+1. **Place RDS in the same VPC** as EKS (in private subnets for production; in public subnets with `publicly_accessible = false` for dev)
+2. **Create a DB subnet group** from the chosen subnets
 3. **Security group rule:** Allow ingress on port `5432` from the EKS node/pod security group
 
 ```hcl
@@ -435,7 +436,7 @@ resource "aws_iam_policy" "langfuse_s3" {
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = ["s3:PutObject", "s3:GetObject", "s3:ListBucket"]
+      Action   = ["s3:PutObject", "s3:GetObject", "s3:ListBucket", "s3:DeleteObject"]
       Resource = [
         "arn:aws:s3:::langfuse-dev-bucket",
         "arn:aws:s3:::langfuse-dev-bucket/*"
@@ -499,7 +500,7 @@ resource "helm_release" "langfuse" {
 
   # Or use set blocks for dynamic values from Terraform outputs
   set {
-    name  = "postgresql.auth.host"
+    name  = "postgresql.host"
     value = module.rds.db_instance_endpoint
   }
 }
@@ -860,6 +861,8 @@ langfuse:
       value: "${init_user_name}"
     - name: LANGFUSE_INIT_USER_PASSWORD
       value: "${init_user_password}"
+    - name: LANGFUSE_INIT_PROJECT_ID
+      value: "langfuse-dev-project"
     - name: LANGFUSE_INIT_PROJECT_NAME
       value: "langfuse-dev"
     - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
@@ -874,7 +877,7 @@ postgresql:
     username: "langfuse"
     password: "${rds_password}"
     database: "langfuse"
-    host: "${rds_host}"
+  host: "${rds_host}"
   directUrl: "postgres://langfuse:${rds_password}@${rds_host}:5432/langfuse"
   shadowDatabaseUrl: ""
 
@@ -890,6 +893,7 @@ s3:
   mediaUpload:
     prefix: "media/"
   batchExport:
+    enabled: true           # Required — batch exports are disabled by default
     prefix: "exports/"
 
 # === Bundled ClickHouse (in-cluster for dev) ===
