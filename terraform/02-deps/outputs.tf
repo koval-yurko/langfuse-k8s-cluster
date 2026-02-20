@@ -8,3 +8,13 @@ output "rds_password" {
   value       = random_password.db.result
   sensitive   = true
 }
+
+output "s3_bucket_name" {
+  description = "Name of the S3 bucket for Langfuse storage"
+  value       = aws_s3_bucket.langfuse.id
+}
+
+output "s3_bucket_region" {
+  description = "Region of the S3 bucket for Langfuse storage"
+  value       = aws_s3_bucket.langfuse.region
+}

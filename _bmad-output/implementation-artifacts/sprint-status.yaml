@@ -49,7 +49,7 @@ development_status:
   # Epic 2: Persistent Data & Storage Services
   epic-2: in-progress
   2-1-workspace-scaffold-and-rds-postgresql-provisioning: done
-  2-2-s3-bucket-for-langfuse-storage: backlog
+  2-2-s3-bucket-for-langfuse-storage: done
   2-3-irsa-role-for-s3-access-and-workspace-outputs: backlog
   epic-2-retrospective: optional
 
