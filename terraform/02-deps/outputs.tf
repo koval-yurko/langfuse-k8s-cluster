@@ -18,3 +18,8 @@ output "s3_bucket_region" {
   description = "Region of the S3 bucket for Langfuse storage"
   value       = aws_s3_bucket.langfuse.region
 }
+
+output "irsa_role_arn" {
+  description = "ARN of the IRSA role for Langfuse S3 access"
+  value       = module.irsa.arn
+}
