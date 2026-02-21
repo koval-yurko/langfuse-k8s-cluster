@@ -54,10 +54,10 @@ development_status:
   epic-2-retrospective: optional
 
   # Epic 3: Langfuse Application Deployment
-  epic-3: in-progress
+  epic-3: done
   3-1-workspace-scaffold-cross-workspace-data-and-secret-generation: done
   3-2-helm-values-template: done
-  3-3-helm-release-deployment: backlog
+  3-3-helm-release-deployment: done
   epic-3-retrospective: optional
 
   # Epic 4: Operational Access & Verification
