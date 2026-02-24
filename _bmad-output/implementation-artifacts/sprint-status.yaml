@@ -61,19 +61,19 @@ development_status:
   epic-3-retrospective: optional
 
   # Epic 4: Operational Access & Verification
-  epic-4: backlog
-  4-1-service-access-via-port-forward: backlog
-  4-2-health-endpoint-verification: backlog
+  epic-4: done
+  4-1-service-access-via-port-forward: done
+  4-2-health-endpoint-verification: done
   epic-4-retrospective: optional
 
   # Epic 5: Infrastructure Lifecycle Management
-  epic-5: backlog
-  5-1-independent-workspace-destroy-and-teardown-sequence: backlog
-  5-2-idempotent-apply-and-full-stack-rebuild: backlog
+  epic-5: done
+  5-1-independent-workspace-destroy-and-teardown-sequence: done
+  5-2-idempotent-apply-and-full-stack-rebuild: done
   epic-5-retrospective: optional
 
   # Epic 6: Configuration & Documentation
-  epic-6: backlog
-  6-1-environment-configuration-files: backlog
-  6-2-comprehensive-readme-documentation: backlog
+  epic-6: done
+  6-1-environment-configuration-files: done
+  6-2-comprehensive-readme-documentation: done
   epic-6-retrospective: optional
