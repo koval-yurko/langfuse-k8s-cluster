@@ -3,7 +3,8 @@ terraform {
 
   cloud {
     workspaces {
-      name = "langfuse-app"
+      name    = "langfuse-app"
+      project = "langfuse-demo"
     }
   }
 
@@ -36,19 +37,19 @@ provider "aws" {
 }
 
 data "aws_eks_cluster_auth" "cluster" {
-  name = data.tfe_outputs.network.values.cluster_name
+  name = data.tfe_outputs.network.nonsensitive_values.cluster_name
 }
 
 provider "helm" {
-  kubernetes {
-    host                   = data.tfe_outputs.network.values.cluster_endpoint
-    cluster_ca_certificate = base64decode(data.tfe_outputs.network.values.cluster_ca_data)
+  kubernetes = {
+    host                   = data.tfe_outputs.network.nonsensitive_values.cluster_endpoint
+    cluster_ca_certificate = base64decode(data.tfe_outputs.network.nonsensitive_values.cluster_ca_data)
     token                  = data.aws_eks_cluster_auth.cluster.token
   }
 }
 
 provider "kubernetes" {
-  host                   = data.tfe_outputs.network.values.cluster_endpoint
-  cluster_ca_certificate = base64decode(data.tfe_outputs.network.values.cluster_ca_data)
+  host                   = data.tfe_outputs.network.nonsensitive_values.cluster_endpoint
+  cluster_ca_certificate = base64decode(data.tfe_outputs.network.nonsensitive_values.cluster_ca_data)
   token                  = data.aws_eks_cluster_auth.cluster.token
 }

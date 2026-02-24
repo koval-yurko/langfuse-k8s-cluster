@@ -18,5 +18,8 @@ override.tf.json
 # OS
 .DS_Store
 
+# Environment Variables
+.env
+
 # Misc
 temp.txt

@@ -3,7 +3,8 @@ terraform {
 
   cloud {
     workspaces {
-      name = "langfuse-network"
+      name    = "langfuse-network"
+      project = "langfuse-demo"
     }
   }
 

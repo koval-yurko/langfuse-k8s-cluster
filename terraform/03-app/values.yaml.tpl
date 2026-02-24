@@ -60,6 +60,11 @@ s3:
 
 clickhouse:
   deploy: true
+  replicaCount: 1
+  clusterEnabled: false
+  resourcesPreset: large
+  zookeeper:
+    enabled: false
   auth:
     password: "dev-clickhouse-pw"
 

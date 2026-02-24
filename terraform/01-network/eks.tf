@@ -3,12 +3,13 @@ module "eks" {
   version = "~> 21.15"
 
   name               = "langfuse-dev"
-  kubernetes_version = "1.35"
+  kubernetes_version = "1.32"
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.public_subnets
 
-  endpoint_public_access = true
+  endpoint_public_access                  = true
+  enable_cluster_creator_admin_permissions = true
 
   eks_managed_node_groups = {
     default = {
@@ -16,11 +17,31 @@ module "eks" {
       min_size       = 2
       max_size       = 2
       desired_size   = 2
+
+      attach_cluster_primary_security_group = true
+
+      metadata_options = {
+        http_endpoint               = "enabled"
+        http_tokens                 = "required"
+        http_put_response_hop_limit = 2
+      }
     }
   }
 
-  # EBS CSI Driver addon — required for ClickHouse PVC
   addons = {
+    vpc-cni = {
+      most_recent    = true
+      before_compute = true
+    }
+    kube-proxy = {
+      most_recent    = true
+      before_compute = true
+    }
+    coredns = {
+      most_recent    = true
+      before_compute = true
+    }
+    # EBS CSI Driver — required for ClickHouse PVC
     aws-ebs-csi-driver = {
       most_recent              = true
       service_account_role_arn = module.ebs_csi_irsa.arn

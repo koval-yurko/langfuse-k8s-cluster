@@ -31,7 +31,7 @@ module "irsa" {
 
   oidc_providers = {
     main = {
-      provider_arn               = data.tfe_outputs.network.values.oidc_provider_arn
+      provider_arn               = data.tfe_outputs.network.nonsensitive_values.oidc_provider_arn
       namespace_service_accounts = ["langfuse:langfuse-web"]
     }
   }
